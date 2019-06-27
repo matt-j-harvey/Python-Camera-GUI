@@ -1,0 +1,78 @@
+from PyQt5.QtWidgets import *
+import sys
+import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_qt4agg import FigureCanvasQTAgg as FigureCanvas
+
+
+app = QApplication([])
+
+global save_directory
+global capturing_video
+
+capturing_video = False
+
+
+class main_window(QMainWindow):
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("PyCap")
+        self.resize(600, 400)
+        self.create_main_layout()
+
+    def create_main_layout(self):
+        self.central_widget = QWidget()
+        self.main_layout = QGridLayout()
+        self.central_widget.setLayout(self.main_layout)
+
+        self.video_figure = Figure()
+        self.video_canvas = FigureCanvas(self.video_figure)
+
+        self.preview_button = QPushButton("Preview")
+
+        self.select_save_directory_button = QPushButton("Select Save Directory")
+        self.select_save_directory_button.clicked.connect(self.select_save_directory)
+
+        self.save_directory_label = QLabel("Save Directory: ")
+
+        self.video_capture_button = QPushButton("Start Recording")
+        self.video_capture_button.clicked.connect(self.video_capture_button_clicked)
+
+
+        self.main_layout.addWidget(self.video_canvas,                   0, 2, 10, 10)
+        self.main_layout.addWidget(self.preview_button,                 10, 2, 1, 10)
+        self.main_layout.addWidget(self.select_save_directory_button,   0, 0)
+        self.main_layout.addWidget(self.save_directory_label,           1, 0)
+        self.main_layout.addWidget(self.video_capture_button,           11, 2, 1, 10)
+
+
+        self.setCentralWidget(self.central_widget)
+
+
+    def select_save_directory(self):
+        global save_directory
+        save_directory = QFileDialog.getExistingDirectory(self, "Select Save Directory")
+        save_directory = "Save Directory: " + str(save_directory)
+        self.save_directory_label.setText(save_directory)
+
+
+    def video_capture_button_clicked(self):
+        global capturing_video
+
+        if capturing_video == False:
+            print("Capturing video")
+            capturing_video = True
+            self.video_capture_button.setText("Stop Recording")
+
+        elif capturing_video == True:
+            print("Stopping Recording")
+            capturing_video = False
+            self.video_capture_button.setText("Start Recording")
+
+
+
+
+window = main_window()
+window.show()
+sys.exit(app.exec()) 
