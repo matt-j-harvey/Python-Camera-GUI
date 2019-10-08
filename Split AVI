@@ -1,0 +1,24 @@
+import cv2
+import os
+
+file_location = "/home/matthew/Documents/Widefield Testing/Test 1/10-07-2019 16-39.avi"
+save_location = "/home/matthew/Documents/Widefield Testing/Test 1/split_video"
+
+
+def video_to_frames(video, path_output_dir):
+    # extract frames from a video and save to directory as 'x.png' where
+    # x is the frame index
+    vidcap = cv2.VideoCapture(video)
+    count = 0
+    while vidcap.isOpened():
+        print("is opened")
+        success, image = vidcap.read()
+        if success:
+            cv2.imwrite(os.path.join(path_output_dir, '%d.png') % count, image)
+            count += 1
+        else:
+            break
+    cv2.destroyAllWindows()
+    vidcap.release()
+
+video_to_frames(file_location, save_location)
