@@ -1,0 +1,387 @@
+from PyQt5.QtWidgets import *
+from PyQt5.QtGui import *
+from PyQt5.QtCore import pyqtSignal, Qt
+import sys
+import socket
+import PySpin
+import imageio
+from time import sleep, clock
+import cv2
+import numpy as np
+import pyqtgraph as pg
+import os
+from PIL import Image, TiffImagePlugin
+import matplotlib.pyplot as plt
+import pandas as pd
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_qt4agg import FigureCanvasQTAgg as FigureCanvas
+import tifffile
+import h5py
+import serial
+
+
+
+#Global Variables
+global system
+global camera
+global nodemap
+global image_event_handler
+global session_number
+
+
+global previewing
+previewing = False
+
+global recording
+recording = False
+
+global mouse_set
+mouse_set = False
+
+global stack_size
+stack_size = 1
+
+#Make PyQtGraph Display Images The Right Way Round
+pg.setConfigOptions(imageAxisOrder='row-major')
+
+#Set Default Save Directory
+save_base_directory = "C:\\Widefield Imaging\\"
+save_full_directory = save_base_directory
+
+led_1_directory = save_full_directory + "LED_1\\"
+led_2_directory = save_full_directory + "LED_2\\"
+
+#Load Logos
+global background_image
+logo_directory = "C:\\Users\\KhanLab\\Pictures\\PyField_Logo.ico"
+
+global selected_led
+
+class ImageEventHandler(PySpin.ImageEvent):
+
+    def __init__(self):
+        global selected_led
+        super(ImageEventHandler, self).__init__()
+        self._image_count = 0
+        selected_led = 1
+
+    def OnImageEvent(self, image):
+        global selected_led
+        image_data = image.GetNDArray()
+        image_converted = image.Convert(PySpin.PixelFormat_Mono8, PySpin.HQ_LINEAR)
+
+        if selected_led == 1:
+            filename = led_1_directory + str(self._image_count) + ".jpeg"
+            window_instance.led_1_display.setImage(image_data, autoLevels=False, levels=(0,255))
+            selected_led = 2
+        else:
+            filename = led_2_directory + str(self._image_count) + ".jpeg"
+            window_instance.led_2_display.setImage(image_data, autoLevels=False, levels=(0,255))
+            selected_led = 1
+
+        if recording == True:
+            image_converted.Save(filename)
+
+        self._image_count += 1
+
+
+def configure_image_events():
+    global camera
+
+    image_event_handler = ImageEventHandler()
+    camera.RegisterEvent(image_event_handler)
+
+    return image_event_handler
+
+
+def acquire_images():
+    global camera
+    global nodemap
+
+    # Begin acquiring images
+    camera.BeginAcquisition()
+
+    # Retrieve images using image event handler
+    window_instance.wait_for_images()
+
+def setup_camera():
+    global system
+    global camera
+    global nodemap
+
+    system = PySpin.System.GetInstance()
+
+    cam_list = system.GetCameras()
+    camera = cam_list[0]
+    camera.Init()
+
+    nodemap = camera.GetNodeMap()
+    sNodemap = camera.GetTLStreamNodeMap()
+
+    node_bufferhandling_mode = PySpin.CEnumerationPtr(sNodemap.GetNode('StreamBufferHandlingMode'))
+    node_newestonly = node_bufferhandling_mode.GetEntryByName('OldestFirst')
+    node_newestonly_mode = node_newestonly.GetValue()
+    node_bufferhandling_mode.SetIntValue(node_newestonly_mode)
+
+    # Set acquisition mode to continuous
+    camera.AcquisitionMode.SetValue(PySpin.AcquisitionMode_Continuous)
+
+    #Set The Frame Rate
+    camera.AcquisitionFrameRate.SetValue(60)
+
+    #Set The Camera Exposure Time
+    camera.ExposureAuto.SetValue(PySpin.ExposureAuto_Off)
+    camera.ExposureTime.SetValue(16600)
+
+    #Set Resolution
+    camera.Width.SetValue(960) #960
+    camera.Height.SetValue(600) #600
+
+    #Turn Off Gain
+    camera.GainAuto.SetValue(PySpin.GainAuto_Off)
+    camera.Gain.SetValue(0)
+
+    #Set File Format
+    camera.PixelFormat.SetValue(PySpin.PixelFormat_Mono8)
+
+
+
+class intrinsic_imaging_window(QWidget):
+
+    def __init__(self, parent=None):
+        super(intrinsic_imaging_window, self).__init__(parent)
+
+        #Setup Window
+        self.setWindowTitle("Wide Mouse")
+        self.setGeometry(0,0,1000,500)
+        self.setWindowIcon(QIcon(logo_directory))
+
+        self.mouse_name_input = QLineEdit("Mouse Name and Title")
+        self.mouse_name_input.setMaximumWidth(450)
+
+        self.save_directory_label = QLabel(save_full_directory)
+
+        self.set_mouse_button = QPushButton("Set Mouse")
+        #self.set_mouse_button.setMaximumWidth(100)
+        self.set_mouse_button.clicked.connect(self.set_mouse)
+
+        # Create Display Image View
+        self.led_1_display = pg.ImageView()
+        self.led_1_display.ui.histogram.hide()
+        self.led_1_display.ui.roiBtn.hide()
+        self.led_1_display.ui.menuBtn.hide()
+        self.led_1_display.show()
+        self.led_1_display.setLevels(0, 255)
+
+
+        self.led_2_display = pg.ImageView()
+        self.led_2_display.ui.histogram.hide()
+        self.led_2_display.ui.roiBtn.hide()
+        self.led_2_display.ui.menuBtn.hide()
+        self.led_2_display.show()
+        self.led_2_display.setLevels(0, 255)
+
+        #Create Preview Button
+        self.preview_button = QPushButton("Preview")
+        self.preview_button.clicked.connect(self.preview)
+
+        #Create Record Button
+        self.record_button = QPushButton("Start Recording")
+        self.record_button.clicked.connect(self.capture_video)
+        self.record_button.setDisabled(True)
+
+        #Create Camera Info Button
+        self.info_label = QLabel("")
+        self.info_label.setMaximumWidth(100)
+        self.populate_info_label()
+
+        self.ser = serial.Serial("COM3", 9600)
+
+        #Add Widgets To Layout
+        self.main_layout = QGridLayout()
+        self.main_layout.addWidget(self.mouse_name_input,       0, 0, 1, 1)
+        self.main_layout.addWidget(self.set_mouse_button,       0, 1, 1, 1)
+        self.main_layout.addWidget(self.save_directory_label,   1, 0, 1, 2)
+        self.main_layout.addWidget(self.led_1_display,          2, 0, 1, 1)
+        self.main_layout.addWidget(self.led_2_display,          2, 1, 1, 1)
+        self.main_layout.addWidget(self.preview_button,         3, 0, 1, 2)
+        self.main_layout.addWidget(self.record_button,          4, 0, 1, 2)
+        self.main_layout.addWidget(self.info_label,             0, 2, 4, 1)
+        self.setLayout(self.main_layout)
+
+
+
+    def display_mouse_name_error(self):
+        warning_message = QMessageBox()
+        warning_message.setText("Please Set Mouse Name")
+        warning_message.setWindowTitle(" :( ")
+        warning_message.setWindowTitle(" :( ")
+        warning_message.exec()
+
+
+    def set_mouse(self):
+        global mouse_set
+        global save_full_directory
+        global session_number
+        global led_1_directory
+        global led_2_directory
+        global save_full_directory
+        global save_base_directory
+
+        mouse_name = self.mouse_name_input.text()
+
+        if mouse_name == "Mouse Name and Title":
+            self.display_mouse_name_error()
+
+        else:
+
+            #Is This A Brand New Mouse?
+            if not os.path.isdir(save_base_directory + mouse_name):
+                os.mkdir(save_base_directory + mouse_name)
+                save_full_directory = save_base_directory + mouse_name + "\\" + str(1) + "\\"
+
+
+            else:
+                #Mouse Has Been Imaged Before - What Number Session Is This?
+                looking_for_directory = True
+                session_number = 1
+                while looking_for_directory == True:
+                    save_full_directory = save_base_directory + mouse_name + "\\" + str(session_number) + "\\"
+                    if os.path.isdir(save_full_directory):
+                        session_number += 1
+                    else:
+                        looking_for_directory = False
+
+            self.save_directory_label.setText(save_full_directory)
+            mouse_set = True
+            self.record_button.setDisabled(False)
+
+
+    def wait_for_images(self):
+        sleep(0.000001)
+
+    def preview(self):
+        global previewing
+        global image_event_handler
+        global selected_led
+
+        if previewing == True:
+            previewing = False
+            camera.EndAcquisition()
+            camera.UnregisterEvent(image_event_handler)
+            self.ser.write(b"1")
+
+            self.preview_button.setText("Preview")
+            image_event_handler = 0
+
+            disable_triggers()
+
+            if mouse_set == True:
+                self.record_button.setDisabled(False)
+
+        else:
+            print("Previewing")
+            previewing = True
+            self.preview_button.setText("Stop Previewing")
+            self.record_button.setDisabled(True)
+
+            set_trigger_mode()
+
+            self.ser.write(b"2")
+            selected_led = 1
+            image_event_handler = configure_image_events()
+            acquire_images()
+
+
+    def capture_video(self):
+        global recording
+        global save_full_directory
+        global image_event_handler
+        global led_1_directory
+        global led_2_directory
+        global selected_led
+
+        if recording == True:
+            recording = False
+            camera.EndAcquisition()
+            camera.UnregisterEvent(image_event_handler)
+
+            self.ser.write(b"1")
+            self.preview_button.setDisabled(False)
+            self.record_button.setText("Start Recording")
+            self.set_mouse()
+
+            image_event_handler = 0
+            disable_triggers()
+
+        else:
+            recording = True
+            self.record_button.setText("Stop Recording")
+            self.preview_button.setDisabled(True)
+
+            led_1_directory = save_full_directory + "LED_1\\"
+            led_2_directory = save_full_directory + "LED_2\\"
+
+            os.mkdir(save_full_directory)
+            os.mkdir(led_1_directory)
+            os.mkdir(led_2_directory)
+
+            set_trigger_mode()
+            self.ser.write(b"2")
+
+            selected_led = 1
+
+            image_event_handler = configure_image_events()
+            acquire_images()
+
+
+    def populate_info_label(self):
+        global camera
+
+        exposure_string             = "Exosure time: "          + str( int(camera.ExposureTime.GetValue() / 1000))          + "\n"
+        frame_rate_string           = "Frame Rate: "            + str(np.around(camera.AcquisitionFrameRate.GetValue(),2))  + "\n"
+        height_string               = "Height: "                + str(camera.Height.GetValue())                             + "\n"
+        width_string                = "Width: "                 + str(camera.Width.GetValue())                              + "\n"
+        vertical_binning_string     = "Vertical Binning: "      + str(camera.BinningVertical.ToString())                    + "\n"
+        horizontal_binning_string   = "Horizontal Binning: "    + str(camera.BinningHorizontal.ToString())                  + "\n"
+        gain_string                 = "Gain: "                  + str(camera.Gain.GetValue())                               + "\n"
+
+        self.info_label.setText(exposure_string +
+                                frame_rate_string +
+                                height_string +
+                                width_string +
+                                vertical_binning_string +
+                                horizontal_binning_string +
+                                gain_string)
+
+def set_trigger_mode():
+
+    #Set Trigger Mode:
+    node_trigger_mode = PySpin.CEnumerationPtr(nodemap.GetNode('TriggerMode'))
+    node_trigger_mode_on = node_trigger_mode.GetEntryByName('On')
+    node_trigger_mode.SetIntValue(node_trigger_mode_on.GetValue())
+
+    node_trigger_source = PySpin.CEnumerationPtr(nodemap.GetNode('TriggerSource'))
+    node_trigger_source_hardware = node_trigger_source.GetEntryByName('Line0')
+    node_trigger_source.SetIntValue(node_trigger_source_hardware.GetValue())
+
+
+
+def disable_triggers():
+
+    #Set Trigger Mode:
+    node_trigger_mode = PySpin.CEnumerationPtr(nodemap.GetNode('TriggerMode'))
+    node_trigger_mode_on = node_trigger_mode.GetEntryByName('Off')
+    node_trigger_mode.SetIntValue(node_trigger_mode_on.GetValue())
+
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+
+    setup_camera()
+
+    window_instance = intrinsic_imaging_window()
+    window_instance.show()
+
+
+    sys.exit(app.exec_())
