@@ -1,0 +1,34 @@
+from multiprocessing import Process, Queue
+
+recording = False
+full_directory = "my Documents"
+
+def capture_images(buffer):
+
+    while recording == True:
+
+        image_result = cam.GetNextImage()
+
+        if image_result.IsIncomplete():
+            pass
+        else:
+            buffer.put(image_result)
+
+
+def save_images(buffer):
+    image_index = 0
+
+    while recording == True:
+
+        if buffer.empty() == True:
+            pass
+        else:
+            image_data = buffer.get()
+            image = image_data.Convert(PySpin.PixelFormat_Mono8, PySpin.HQ_LINEAR)
+            filename = full_directory + str(image_index) + ".tiff"
+            image.save(filename)
+
+
+buffer = Queue()
+capture_process = Process(target=capture_images, args=(buffer,))
+save_process = Process(target=capture_images, args=(buffer,))
