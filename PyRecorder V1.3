@@ -1,0 +1,335 @@
+from PyDAQmx import DAQmxTypes, DAQmxConstants, DAQmxFunctions, DAQmxCallBack
+import numpy as np
+import pyqtgraph as pg
+import matplotlib.pyplot as plt
+from PyQt5.QtWidgets import *
+from PyQt5.QtGui import *
+from PyQt5.QtCore import *
+import sys
+import tables
+import threading
+import time
+
+pg.setConfigOption('background', 'w')
+pg.setConfigOption('foreground', 'k')
+
+display_buffer = np.zeros((13,5000))
+
+global recording
+recording = False
+
+class ai_window(QWidget):
+
+    def __init__(self,parent=None):
+        super(ai_window, self).__init__(parent)
+
+
+        #Setup Window
+        self.setWindowTitle("PyI Recorder")
+        self.setGeometry(0,0,1000,500)
+        self.setStyleSheet("background-color: white;")
+
+        self.save_directory = "C:\Widefield Imaging\Test\\"
+
+        # Create Graph Displays
+        self.graph_1_widget = pg.PlotWidget()
+        self.graph_1_widget.setYRange(0,0.1)
+        self.graph_1_label = QLabel("Reward")
+        self.graph_1_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+
+        self.graph_2_widget = pg.PlotWidget()
+        self.graph_2_widget.setYRange(0,1)
+        self.graph_2_label = QLabel("Lick Signal")
+        self.graph_2_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+
+        self.graph_3_widget = pg.PlotWidget()
+        self.graph_3_widget.setYRange(0,0.1)
+        self.graph_3_label = QLabel("Stimulus 1")
+        self.graph_3_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+
+        self.graph_4_widget = pg.PlotWidget()
+        self.graph_4_widget.setYRange(0,0.1)
+        self.graph_4_label = QLabel("Stimulus 2")
+        self.graph_4_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+
+        self.graph_5_widget = pg.PlotWidget()
+        self.graph_5_widget.setYRange(0,0.1)
+        self.graph_5_label = QLabel("Odour 1")
+        self.graph_5_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+
+        self.graph_6_widget = pg.PlotWidget()
+        self.graph_6_widget.setYRange(0, 0.1)
+        self.graph_6_label = QLabel("Odour 2")
+        self.graph_6_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+
+        self.graph_7_widget = pg.PlotWidget()
+        self.graph_7_widget.setYRange(0, 0.1)
+        self.graph_7_label = QLabel("Irrelevance")
+        self.graph_7_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+
+        self.graph_8_widget = pg.PlotWidget()
+        self.graph_8_widget.setYRange(0.4, 10)
+        self.graph_8_label = QLabel("Running Speed")
+        self.graph_8_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+
+        self.graph_9_widget = pg.PlotWidget()
+        self.graph_9_widget.setYRange(0, 0.1)
+        self.graph_9_label = QLabel("Trial End")
+        self.graph_9_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+
+        self.graph_10_widget = pg.PlotWidget()
+        self.graph_10_widget.setYRange(0, 0.1)
+        self.graph_10_label = QLabel("Camera Trigger")
+        self.graph_10_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+
+        self.graph_11_widget = pg.PlotWidget()
+        self.graph_11_widget.setYRange(0, 0.1)
+        self.graph_11_label = QLabel("Camera Frames")
+        self.graph_11_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+
+        self.graph_12_widget = pg.PlotWidget()
+        self.graph_12_widget.setYRange(0, 0.1)
+        self.graph_12_label = QLabel("LED 1")
+        self.graph_12_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+
+        self.graph_13_widget = pg.PlotWidget()
+        self.graph_13_widget.setYRange(0, 0.1)
+        self.graph_13_label = QLabel("LED 2")
+        self.graph_13_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+
+
+        #Create Start Stop Buttons
+        self.recording_state = False
+        self.recording_button = QPushButton("Start Recording")
+        self.recording_button.clicked.connect(self.toggle_recording)
+
+        #Create Directory Selection Button
+        self.directory_selection_button = QPushButton("Select Save Directory")
+        self.directory_selection_button.clicked.connect(self.select_save_directory)
+
+        #Create Recording Location Label
+        self.save_directory_label = QLabel(str(self.save_directory))
+        self.save_directory_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+
+
+        #Add Widgets To Layout
+        self.main_layout = QGridLayout()
+        self.main_layout.addWidget(self.graph_1_label,          0, 0, 1, 2)
+        self.main_layout.addWidget(self.graph_1_widget,         1, 0, 2, 2)
+
+        self.main_layout.addWidget(self.graph_2_label,          3, 0, 1, 2)
+        self.main_layout.addWidget(self.graph_2_widget,         4, 0, 2, 2)
+
+        self.main_layout.addWidget(self.graph_3_label,          6, 0, 1, 2)
+        self.main_layout.addWidget(self.graph_3_widget,         7, 0, 2, 2)
+
+        self.main_layout.addWidget(self.graph_4_label,          9, 0, 1, 2)
+        self.main_layout.addWidget(self.graph_4_widget,         10, 0, 2, 2)
+
+        self.main_layout.addWidget(self.graph_5_label,          12, 0, 1, 2)
+        self.main_layout.addWidget(self.graph_5_widget,         13, 0, 2, 2)
+
+        self.main_layout.addWidget(self.graph_6_label,          15, 0, 1, 2)
+        self.main_layout.addWidget(self.graph_6_widget,         16, 0, 2, 2)
+
+        self.main_layout.addWidget(self.save_directory_label,   19, 0, 1, 2)
+        self.main_layout.addWidget(self.recording_button,       20, 0, 1, 1)
+        self.main_layout.addWidget(self.directory_selection_button, 20, 1, 1, 1)
+
+
+        self.main_layout.addWidget(self.graph_7_label,          0, 2, 1, 2)
+        self.main_layout.addWidget(self.graph_7_widget,         1, 2, 2, 2)
+
+        self.main_layout.addWidget(self.graph_8_label,          3, 2, 1, 2)
+        self.main_layout.addWidget(self.graph_8_widget,         4, 2, 2, 2)
+
+        self.main_layout.addWidget(self.graph_9_label,          6, 2, 1, 2)
+        self.main_layout.addWidget(self.graph_9_widget,         7, 2, 2, 2)
+
+        self.main_layout.addWidget(self.graph_10_label,         9, 2, 1, 2)
+        self.main_layout.addWidget(self.graph_10_widget,        10, 2, 2, 2)
+
+        self.main_layout.addWidget(self.graph_11_label,         12, 2, 1, 2)
+        self.main_layout.addWidget(self.graph_11_widget,        13, 2, 2, 2)
+
+        self.main_layout.addWidget(self.graph_12_label,         15, 2, 1, 2)
+        self.main_layout.addWidget(self.graph_12_widget,        16, 2, 2, 2)
+
+        self.main_layout.addWidget(self.graph_13_label,         18, 2, 1, 2)
+        self.main_layout.addWidget(self.graph_13_widget,        19, 2, 2, 2)
+
+        self.setLayout(self.main_layout)
+
+    def toggle_recording(self):
+
+        if self.recording_state == False:
+            self.start_recording()
+        elif self.recording_state == True:
+            self.stop_recording()
+
+
+    def start_recording(self):
+        global recording
+        global data_storage
+        global storage_file
+
+        self.recording_button.setText("Stop Recording")
+        self.recording_state = True
+
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+
+        storage_path = self.save_directory + timestamp + ".h5"
+        print("Storage Path", storage_path)
+
+
+        storage_file = tables.open_file(storage_path, mode='w')
+        dimensions = (0, 13, 1000)
+        data_storage = storage_file.create_earray(storage_file.root, 'Data', tables.Float64Atom(), shape=dimensions)
+        recording = True
+
+    def stop_recording(self):
+        global recording
+        self.recording_state = False
+        self.recording_button.setText("Start Recording")
+        recording = False
+        storage_file.close()
+
+    def select_save_directory(self):
+        self.save_directory = QFileDialog.getExistingDirectory()
+
+        self.save_directory_label.setText(str(self.save_directory))
+
+class MyList(list):
+    pass
+
+def update_graphs():
+    global display_buffer
+
+    recording = 1
+    while recording == 1:
+        window_instance.graph_1_widget.clear()
+        window_instance.graph_1_widget.plot(display_buffer[0], pen=pen)
+
+        window_instance.graph_2_widget.clear()
+        window_instance.graph_2_widget.plot(display_buffer[1], pen=pen)
+
+        window_instance.graph_3_widget.clear()
+        window_instance.graph_3_widget.plot(display_buffer[2], pen=pen)
+
+        window_instance.graph_4_widget.clear()
+        window_instance.graph_4_widget.plot(display_buffer[3], pen=pen)
+
+        window_instance.graph_5_widget.clear()
+        window_instance.graph_5_widget.plot(display_buffer[4], pen=pen)
+
+        window_instance.graph_6_widget.clear()
+        window_instance.graph_6_widget.plot(display_buffer[5], pen=pen)
+
+        window_instance.graph_7_widget.clear()
+        window_instance.graph_7_widget.plot(display_buffer[6], pen=pen)
+
+        window_instance.graph_8_widget.clear()
+        window_instance.graph_8_widget.plot(display_buffer[7], pen=pen)
+
+        window_instance.graph_9_widget.clear()
+        window_instance.graph_9_widget.plot(display_buffer[8], pen=pen)
+
+        window_instance.graph_10_widget.clear()
+        window_instance.graph_10_widget.plot(display_buffer[9], pen=pen)
+
+        window_instance.graph_11_widget.clear()
+        window_instance.graph_11_widget.plot(display_buffer[10], pen=pen)
+
+        window_instance.graph_12_widget.clear()
+        window_instance.graph_12_widget.plot(display_buffer[11], pen=pen)
+
+        window_instance.graph_13_widget.clear()
+        window_instance.graph_13_widget.plot(display_buffer[11], pen=pen)
+
+        app.processEvents()
+
+
+def EveryNCallback_py(taskHandle, everyNsamplesEventType, nSamples, callbackData_ptr):
+    global display_buffer
+    global recording
+
+    callbackdata = DAQmxCallBack.get_callbackdata_from_id(callbackData_ptr)
+    read =  DAQmxTypes.int32()                                                                                                                      #Create An Integer Varaible to Store How Many Data Points Have Been Read
+    data = np.zeros(13000)                                                                                                                           #Create A Numpy Array To Store The Read Data
+    DAQmxFunctions.DAQmxReadAnalogF64(taskHandle,1000,10.0,DAQmxConstants.DAQmx_Val_GroupByChannel,data,13000,DAQmxTypes.byref(read),None)
+    callbackdata.extend(data.tolist())
+
+
+    data = np.reshape(data, (13,1000))
+    display_buffer = np.roll(display_buffer, -1000, axis=1)
+    display_buffer[:, 4000:] = data
+    #display_buffer = display_data
+
+    if recording == True:
+        data_storage.append([data])
+        data_storage.flush()
+
+    return 0                                                                                                                                        # The function should return an integer
+
+
+
+
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+
+
+    x = np.arange(5000)
+
+
+    window_instance = ai_window()
+    window_instance.show()
+
+
+    # list where the data are stored
+    data = MyList()
+    id_data = DAQmxCallBack.create_callbackdata_id(data)
+    count = 0
+
+    # Convert the python function to a C function callback
+    EveryNCallback = DAQmxTypes.DAQmxEveryNSamplesEventCallbackPtr(EveryNCallback_py)
+
+    #Create Task
+    taskHandle = DAQmxTypes.TaskHandle(0)                               #Create A Task Handle
+    DAQmxFunctions.DAQmxCreateTask("", DAQmxTypes.byref(taskHandle))    #Create A Task Using This Handle
+
+    #Setup Channels
+    DAQmxFunctions.DAQmxCreateAIVoltageChan(taskHandle, "Dev1/ai1",  "", DAQmxConstants.DAQmx_Val_Cfg_Default, -10.0,   10.0, DAQmxConstants.DAQmx_Val_Volts, None)
+    DAQmxFunctions.DAQmxCreateAIVoltageChan(taskHandle, "Dev1/ai2",  "", DAQmxConstants.DAQmx_Val_Cfg_Default, -10.0,   10.0, DAQmxConstants.DAQmx_Val_Volts, None)
+    DAQmxFunctions.DAQmxCreateAIVoltageChan(taskHandle, "Dev1/ai3",  "", DAQmxConstants.DAQmx_Val_Cfg_Default, -10.0,   10.0, DAQmxConstants.DAQmx_Val_Volts, None)
+    DAQmxFunctions.DAQmxCreateAIVoltageChan(taskHandle, "Dev1/ai4",  "", DAQmxConstants.DAQmx_Val_Cfg_Default, -10.0,   10.0, DAQmxConstants.DAQmx_Val_Volts, None)
+    DAQmxFunctions.DAQmxCreateAIVoltageChan(taskHandle, "Dev1/ai5",  "", DAQmxConstants.DAQmx_Val_Cfg_Default, -10.0,   10.0, DAQmxConstants.DAQmx_Val_Volts, None)
+    DAQmxFunctions.DAQmxCreateAIVoltageChan(taskHandle, "Dev1/ai6",  "", DAQmxConstants.DAQmx_Val_Cfg_Default, -10.0,   10.0, DAQmxConstants.DAQmx_Val_Volts, None)
+    DAQmxFunctions.DAQmxCreateAIVoltageChan(taskHandle, "Dev1/ai7",  "", DAQmxConstants.DAQmx_Val_Cfg_Default, -10.0,   10.0, DAQmxConstants.DAQmx_Val_Volts, None)
+    DAQmxFunctions.DAQmxCreateAIVoltageChan(taskHandle, "Dev1/ai8",  "", DAQmxConstants.DAQmx_Val_Cfg_Default, -10.0,   10.0, DAQmxConstants.DAQmx_Val_Volts, None)
+    DAQmxFunctions.DAQmxCreateAIVoltageChan(taskHandle, "Dev1/ai9",  "", DAQmxConstants.DAQmx_Val_Cfg_Default, -10.0,   10.0, DAQmxConstants.DAQmx_Val_Volts, None)
+    DAQmxFunctions.DAQmxCreateAIVoltageChan(taskHandle, "Dev1/ai10", "", DAQmxConstants.DAQmx_Val_Cfg_Default, -10.0,   10.0, DAQmxConstants.DAQmx_Val_Volts, None)
+    DAQmxFunctions.DAQmxCreateAIVoltageChan(taskHandle, "Dev1/ai11", "", DAQmxConstants.DAQmx_Val_Cfg_Default, -10.0,   10.0, DAQmxConstants.DAQmx_Val_Volts, None)
+    DAQmxFunctions.DAQmxCreateAIVoltageChan(taskHandle, "Dev1/ai12", "", DAQmxConstants.DAQmx_Val_Cfg_Default, -10.0,   10.0, DAQmxConstants.DAQmx_Val_Volts, None)
+    DAQmxFunctions.DAQmxCreateAIVoltageChan(taskHandle, "Dev1/ai13", "", DAQmxConstants.DAQmx_Val_Cfg_Default, -10.0,   10.0, DAQmxConstants.DAQmx_Val_Volts, None)
+    DAQmxFunctions.DAQmxCfgSampClkTiming(taskHandle,    "", 1000.0, DAQmxConstants.DAQmx_Val_Rising, DAQmxConstants.DAQmx_Val_ContSamps,    1000)
+
+    DAQmxFunctions.DAQmxRegisterEveryNSamplesEvent(taskHandle,DAQmxConstants.DAQmx_Val_Acquired_Into_Buffer, 1000, 0, EveryNCallback, id_data)
+
+
+
+
+    pen = pg.mkPen(color=(100, 100, 200), width=2)
+
+    # DAQmx Start Code
+    DAQmxFunctions.DAQmxStartTask(taskHandle)
+
+    update_thread = threading.Thread(target=update_graphs())
+    update_thread.start()
+
+
+
+
+
+    sys.exit(app.exec_())
+
