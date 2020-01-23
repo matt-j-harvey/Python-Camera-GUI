@@ -1,0 +1,412 @@
+from PyQt5.QtWidgets import *
+from PyQt5.QtGui import *
+from PyQt5.QtCore import *
+
+import sys
+import socket
+import PySpin
+import imageio
+from time import sleep, clock
+from cv2 import VideoWriter
+import numpy as np
+import pyqtgraph as pg
+import os
+from PIL import Image, TiffImagePlugin
+import matplotlib.pyplot as plt
+import pandas as pd
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_qt4agg import FigureCanvasQTAgg as FigureCanvas
+import tifffile
+import h5py
+import serial
+import zlib
+import queue
+import threading
+import h5py
+import tables
+
+pg.setConfigOptions(imageAxisOrder='row-major')
+
+save_base_directory = "C:\\Widefield Imaging\\"
+save_full_directory = save_base_directory
+
+led_1_directory = save_full_directory + "LED_1\\"
+led_2_directory = save_full_directory + "LED_2\\"
+
+global previewing
+global recording
+
+recording = False
+previewing = False
+
+def setup_camera():
+    global system
+    global nodemap
+
+    system = PySpin.System.GetInstance()
+
+    cam_list = system.GetCameras()
+    camera = cam_list[0]
+    camera.Init()
+
+    nodemap = camera.GetNodeMap()
+    sNodemap = camera.GetTLStreamNodeMap()
+
+    node_bufferhandling_mode = PySpin.CEnumerationPtr(sNodemap.GetNode('StreamBufferHandlingMode'))
+    node_newestonly = node_bufferhandling_mode.GetEntryByName('OldestFirst')
+    node_newestonly_mode = node_newestonly.GetValue()
+    node_bufferhandling_mode.SetIntValue(node_newestonly_mode)
+
+    disable_triggers()
+
+    # Set acquisition mode to continuous
+    camera.AcquisitionMode.SetValue(PySpin.AcquisitionMode_Continuous)
+
+    #Set The Camera Exposure Time
+    camera.ExposureAuto.SetValue(PySpin.ExposureAuto_Off)
+    camera.ExposureTime.SetValue(12000)
+
+    #Set Resolution
+    camera.Width.SetValue(608) #960
+    camera.Height.SetValue(600) #600
+    camera.OffsetX.SetValue(176)
+    camera.OffsetY.SetValue(0)
+
+    #Set Gain
+    camera.GainAuto.SetValue(PySpin.GainAuto_Off)
+    camera.Gain.SetValue(8)
+
+    #Set File Format
+    camera.PixelFormat.SetValue(PySpin.PixelFormat_Mono8)
+
+    return camera
+
+
+def set_trigger_mode():
+    node_trigger_mode = PySpin.CEnumerationPtr(nodemap.GetNode('TriggerMode'))
+    node_trigger_mode_on = node_trigger_mode.GetEntryByName('On')
+    node_trigger_mode.SetIntValue(node_trigger_mode_on.GetValue())
+
+    node_trigger_source = PySpin.CEnumerationPtr(nodemap.GetNode('TriggerSource'))
+    node_trigger_source_hardware = node_trigger_source.GetEntryByName('Line0')
+    node_trigger_source.SetIntValue(node_trigger_source_hardware.GetValue())
+
+
+def disable_triggers():
+    node_trigger_mode = PySpin.CEnumerationPtr(nodemap.GetNode('TriggerMode'))
+    node_trigger_mode_on = node_trigger_mode.GetEntryByName('Off')
+    node_trigger_mode.SetIntValue(node_trigger_mode_on.GetValue())
+
+
+
+
+class intrinsic_imaging_window(QWidget):
+
+    def __init__(self, camera, parent=None):
+        super(intrinsic_imaging_window, self).__init__(parent)
+
+        #Setup Window
+        self.setWindowTitle("Field Mouse")
+        self.setGeometry(0,0,1000,500)
+        self.logo_directory = "C:\\Users\\KhanLab\\Pictures\\PyField_Logo.ico"
+        self.setWindowIcon(QIcon(self.logo_directory))
+
+        self.previewing = False
+        self.recording = False
+        self.mouse_set = False
+        self.mouse_name = "Lord Whiskers Of Squeeksbury"
+        self.save_directory = r"C:\Users\KhanLab\Documents\Test Data"
+        self.save_base_directory = "C:\\Widefield Imaging\\"
+
+        self.mouse_name_input = QLineEdit("Mouse Name and Title")
+        self.mouse_name_input.setMaximumWidth(450)
+
+        self.save_directory_label = QLabel(save_full_directory)
+
+        self.set_mouse_button = QPushButton("Set Mouse")
+        #self.set_mouse_button.setMaximumWidth(100)
+        self.set_mouse_button.clicked.connect(self.set_mouse)
+
+        # Create Display Image View
+        self.led_1_widget = pg.GraphicsLayoutWidget()
+        self.led_1_viewbox = self.led_1_widget.addViewBox(lockAspect=1, invertY=False)
+        self.led_1_image = pg.ImageItem()
+        self.led_1_viewbox.addItem(self.led_1_image)
+        self.led_1_viewbox.setAspectLocked(True)
+
+        self.led_2_widget = pg.GraphicsLayoutWidget()
+        self.led_2_viewbox = self.led_2_widget.addViewBox(row=1, col=1)
+        self.led_2_image = pg.ImageItem()
+        self.led_2_viewbox.addItem(self.led_2_image)
+        self.led_2_viewbox.setAspectLocked(True)
+
+        #Create Preview Button
+        self.preview_button = QPushButton("Preview")
+        self.preview_button.clicked.connect(self.preview)
+
+        #Create Record Button
+        self.record_button = QPushButton("Start Recording")
+        self.record_button.clicked.connect(self.record)
+        self.record_button.setDisabled(True)
+
+        #Create Camera Info Button
+        self.info_label = QLabel("")
+        self.info_label.setMaximumWidth(100)
+
+        self.ser = serial.Serial("COM3", 9600)
+
+        #Create Gain Spinbox
+        self.gain_spinner = QDoubleSpinBox()
+        self.gain_spinner.setMaximum(28)
+        self.gain_label = QLabel("Gain: ")
+        self.gain_spinner.setValue(8)
+        self.gain_spinner.valueChanged.connect(self.gain_changed)
+        self.gain_spinner.setSingleStep(0.1)
+
+        self.x_offset_spinner = QSpinBox()
+        self.x_offset_spinner.setSingleStep(4)
+        self.x_offset_spinner.setMaximum(352)
+        self.x_offset_spinner.setValue(176)
+        self.x_offset_spinner.valueChanged.connect(self.x_offset_changed)
+
+
+        #Add Widgets To Layout
+        self.main_layout = QGridLayout()
+        self.main_layout.addWidget(self.mouse_name_input,       0, 0, 1, 1)
+        self.main_layout.addWidget(self.set_mouse_button,       0, 1, 1, 1)
+        self.main_layout.addWidget(self.save_directory_label,   1, 0, 1, 2)
+        self.main_layout.addWidget(self.led_1_widget,           2, 0, 1, 1)
+        self.main_layout.addWidget(self.led_2_widget,           2, 1, 1, 1)
+        self.main_layout.addWidget(self.preview_button,         3, 0, 1, 2)
+        self.main_layout.addWidget(self.record_button,          4, 0, 1, 2)
+
+        self.main_layout.addWidget(self.gain_label,             2, 2, 1, 1)
+        self.main_layout.addWidget(self.gain_spinner,           2, 3, 1, 1)
+        self.main_layout.addWidget(self.x_offset_spinner,       3, 3, 1, 1)
+
+
+        self.setLayout(self.main_layout)
+
+    def x_offset_changed(self):
+        offset = self.x_offset_spinner.value()
+        print("x offset", offset)
+        camera.OffsetX.SetValue(offset)
+
+    def y_offset_changed(self):
+        offset = self.y_offset_spinner.value()
+        print("y offset", offset)
+        camera.OffsetY.SetValue(offset)
+
+    def height_changed(self):
+        height = self.height_spinner.value()
+        print("height", height)
+        camera.Height.SetValue(height)
+
+    def width_changed(self):
+        width = self.width_spinner.value()
+        print("width", width)
+        camera.Width.SetValue(width)
+
+
+    def gain_changed(self):
+        gain = self.gain_spinner.value()
+        print("Gain", gain)
+        camera.Gain.SetValue(gain)
+
+    def display_mouse_name_error(self):
+        warning_message = QMessageBox()
+        warning_message.setText("Please Set Mouse Name")
+        warning_message.setWindowTitle(" :( ")
+        warning_message.setWindowTitle(" :( ")
+        warning_message.exec()
+
+
+    def set_mouse(self):
+        print("Setting Mouse")
+
+        self.mouse_name = self.mouse_name_input.text()
+
+        if self.mouse_name == "Mouse Name and Title":
+            self.display_mouse_name_error()
+
+        else:
+
+            #Is This A Brand New Mouse?
+            if not os.path.isdir(self.save_base_directory + self.mouse_name):
+                print("Brand new Mouse!")
+                os.mkdir(save_base_directory + self.mouse_name)
+                self.save_directory = self.save_base_directory + self.mouse_name + "\\" + str(1) + "\\"
+
+            # Mouse Has Been Imaged Before - What Number Session Is This?
+            else:
+                looking_for_directory = True
+                session_number = 1
+                while looking_for_directory == True:
+                    self.save_directory = self.save_base_directory + self.mouse_name + "\\" + str(session_number) + "\\"
+                    if os.path.isdir(self.save_directory):
+                        session_number += 1
+                    else:
+                        looking_for_directory = False
+
+            self.save_directory_label.setText(self.save_directory)
+            self.mouse_set = True
+            self.record_button.setDisabled(False)
+
+
+    def wait_for_images(self):
+        sleep(0.000001)
+
+
+    def acquire_images(self, camera, blue_storage, violet_storage, number_of_images_to_acquire):
+
+        camera.BeginAcquisition()
+
+        frame_index = 0
+        while frame_index < number_of_images_to_acquire:
+            image_result = camera.GetNextImage()
+            image_data = image_result.GetNDArray()
+
+            if image_result.IsIncomplete():
+                pass
+            else:
+                if frame_index % 2 == 0:
+                    blue_storage.append([image_data])
+                    window_instance.led_1_image.setImage(image_data, autoLevels=False, levels=(0, 255))
+
+                else:
+                    violet_storage.append([image_data])
+                    window_instance.led_2_image.setImage(image_data, autoLevels=False, levels=(0, 255))
+                    storage_file.flush()
+                    app.processEvents()
+
+                image_result.Release()
+                print("Camptured frame: ", frame_index)
+                frame_index += 1
+
+
+    def preview_images(self, camera):
+        global previewing
+
+        try:
+            camera.EndAcquisition()
+        except:
+            pass
+
+        camera.BeginAcquisition()
+
+        current_led = 1
+        while previewing == True:
+
+            image_result = camera.GetNextImage()
+            if image_result.IsIncomplete():
+                pass
+
+            else:
+                image_data = image_result.GetNDArray()
+
+                if current_led == 1:
+                    window_instance.led_1_image.setImage(image_data, autoLevels=False, levels=(0, 255))
+                    current_led = 2
+                else:
+                    window_instance.led_2_image.setImage(image_data, autoLevels=False, levels=(0, 255))
+                    current_led = 1
+
+                image_result.Release()
+
+            app.processEvents()
+
+    def record_images(self, camera, storage_file, blue_storage, violet_storage, number_of_images_to_acquire):
+
+        camera.BeginAcquisition()
+
+        frame_index = 0
+        while self.recording == True:
+            image_result = camera.GetNextImage()
+
+            if image_result.IsIncomplete():
+                pass
+            else:
+                image_data = image_result.GetNDArray()
+                if frame_index % 2 == 0:
+                    blue_storage.append([image_data])
+                    window_instance.led_1_image.setImage(image_data, autoLevels=False, levels=(0, 255))
+
+                else:
+                    violet_storage.append([image_data])
+                    window_instance.led_2_image.setImage(image_data, autoLevels=False, levels=(0, 255))
+                    storage_file.flush()
+
+
+                image_result.Release()
+                app.processEvents()
+            print("Camptured frame: ", frame_index)
+            frame_index += 1
+
+    def preview(self):
+        global previewing
+        global storage_file
+
+        if previewing == True:
+            print("Stopping Preview")
+            previewing = False
+            camera.EndAcquisition()
+            print("sending 1")
+            self.ser.write(b"1")
+            self.preview_button.setText("Preview")
+
+            if self.mouse_set == True:
+                self.record_button.setDisabled(False)
+
+        else:
+            print("Previewing")
+            previewing = True
+            self.preview_button.setText("Stop Previewing")
+            self.record_button.setDisabled(True)
+
+            set_trigger_mode()
+            self.ser.write(b"2")
+            self.preview_images(camera)
+
+    def record(self):
+        global storage_file
+
+        if self.recording == True:
+            camera.EndAcquisition()
+            self.ser.write(b"1")
+            self.record_button.setText("Record")
+            self.recording = False
+            storage_file.close()
+            print("Finished recording")
+
+        else:
+            self.recording = True
+            set_trigger_mode()
+            self.ser.write(b"2")
+            self.record_button.setText("Stop Recording")
+            number_of_images_to_acquire = 108000
+            dimensions = (0, 600, 608)
+
+            storage_path = "C:\\Users\\KhanLab\\Pictures\\blue_17.h5"
+            storage_file = tables.open_file(storage_path, mode='w')
+            blue_storage = storage_file.create_earray(storage_file.root, 'blue', tables.UInt8Atom(), shape=dimensions, expectedrows=number_of_images_to_acquire / 2)
+            violet_storage = storage_file.create_earray(storage_file.root, 'violet', tables.UInt8Atom(), shape=dimensions, expectedrows=number_of_images_to_acquire / 2)
+
+            self.record_images(camera, storage_file, blue_storage, violet_storage, number_of_images_to_acquire)
+
+
+
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+
+    print("Setting up camera")
+    camera = setup_camera()
+
+    print("Creating Window")
+    window_instance = intrinsic_imaging_window(camera)
+    window_instance.show()
+
+
+    sys.exit(app.exec_())
+
+
