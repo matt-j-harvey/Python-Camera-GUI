@@ -1,0 +1,59 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import h5py
+import tables
+from scipy import signal, ndimage, stats
+from sklearn.linear_model import LinearRegression
+from skimage.morphology import white_tophat
+from PIL import Image
+from time import clock
+import os
+import cv2
+
+
+def load_arrays(video_file):
+    table = tables.open_file(video_file, mode='r')
+    blue_array = table.root.blue
+    violet_array = table.root.violet
+
+    return blue_array, violet_array
+
+
+def recreate_frames(array):
+
+    figure_1 = plt.figure()
+    axis_1 = figure_1.add_subplot(1,1,1)
+
+    video_name = home_directory + "/original_reconstruction_1min.avi"
+    video_codec = cv2.VideoWriter_fourcc(*'DIVX')
+    video = cv2.VideoWriter(video_name, video_codec, frameSize=(608, 600), fps=30)
+
+    for x in range(1800):
+        frame=array[x]
+
+
+        frame = np.ndarray.reshape(frame, (600,608))
+        frame = np.ndarray.astype(frame, np.uint8)
+        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+
+
+        video.write(frame)
+
+    cv2.destroyAllWindows()
+    video.release()
+
+
+
+
+
+#Assign File Location
+home_directory      = r"C:\Widefield Imaging\Green_Black_Retinotopy\1"
+video_file          = home_directory + "\\widefield.h5"
+
+blue_array, violet_array = load_arrays(video_file)
+
+print("Blue", np.shape(blue_array))
+
+print("Violet", np.shape(violet_array))
+
+#recreate_frames(blue_array)
